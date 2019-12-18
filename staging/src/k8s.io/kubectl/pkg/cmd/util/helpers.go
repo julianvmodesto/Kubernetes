@@ -511,6 +511,18 @@ const (
 	DryRunServer
 )
 
+func (d DryRunStrategy) Client() bool {
+	return d == DryRunClient
+}
+
+func (d DryRunStrategy) Server() bool {
+	return d == DryRunServer
+}
+
+func (d DryRunStrategy) None() bool {
+	return d == DryRunNone
+}
+
 func GetDryRunFlag(cmd *cobra.Command) (DryRunStrategy, error) {
 	var dryRunFlag = GetFlagString(cmd, "dry-run")
 	if dryRunFlag == "" && !cmd.Flags().Changed("dry-run") {
@@ -537,6 +549,22 @@ func GetDryRunFlag(cmd *cobra.Command) (DryRunStrategy, error) {
 		return DryRunClient, nil
 	}
 	return DryRunNone, nil
+}
+
+// PrintFlagsWithDryRunStrategy sets a success message at print time for the dry run strategy
+//
+// TODO(juanvallejo): This can be cleaned up even further by creating
+// a PrintFlags struct that binds the --dry-run flag, and whose
+// ToPrinter method returns a printer that understands how to print
+// this success message.
+func PrintFlagsWithDryRunStrategy(printFlags *genericclioptions.PrintFlags, dryRunStrategy DryRunStrategy) *genericclioptions.PrintFlags {
+	switch dryRunStrategy {
+	case DryRunClient:
+		printFlags.Complete("%s (dry run)")
+	case DryRunServer:
+		printFlags.Complete("%s (server dry run)")
+	}
+	return printFlags
 }
 
 // GetResourcesAndPairs retrieves resources and "KEY=VALUE or KEY-" pair args from given args
