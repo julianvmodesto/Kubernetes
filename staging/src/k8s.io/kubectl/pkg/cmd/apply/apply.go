@@ -60,8 +60,7 @@ type ApplyOptions struct {
 	ForceConflicts  bool
 	FieldManager    string
 	Selector        string
-	DryRun          bool
-	ServerDryRun    bool
+	DryRunFlags     *genericclioptions.DryRunFlags
 	Prune           bool
 	PruneResources  []pruneResource
 	cmdBaseName     string
@@ -142,6 +141,7 @@ func NewApplyOptions(ioStreams genericclioptions.IOStreams) *ApplyOptions {
 		RecordFlags: genericclioptions.NewRecordFlags(),
 		DeleteFlags: delete.NewDeleteFlags("that contains the configuration to apply"),
 		PrintFlags:  genericclioptions.NewPrintFlags("created").WithTypeSetter(scheme.Scheme),
+		DryRunFlags: genericclioptions.NewDryRunFlags(),
 
 		Overwrite:    true,
 		OpenAPIPatch: true,
@@ -184,6 +184,7 @@ func NewCmdApply(baseName string, f cmdutil.Factory, ioStreams genericclioptions
 	o.DeleteFlags.AddFlags(cmd)
 	o.RecordFlags.AddFlags(cmd)
 	o.PrintFlags.AddFlags(cmd)
+	o.DryRunFlags.AddFlags(cmd, o.PrintFlags)
 
 	cmd.Flags().BoolVar(&o.Overwrite, "overwrite", o.Overwrite, "Automatically resolve conflicts between the modified and live configuration by using values from the modified configuration")
 	cmd.Flags().BoolVar(&o.Prune, "prune", o.Prune, "Automatically delete resource objects, including the uninitialized ones, that do not appear in the configs and are created by either apply or create --save-config. Should be used with either -l or --all.")
@@ -192,8 +193,6 @@ func NewCmdApply(baseName string, f cmdutil.Factory, ioStreams genericclioptions
 	cmd.Flags().BoolVar(&o.All, "all", o.All, "Select all resources in the namespace of the specified resource types.")
 	cmd.Flags().StringArrayVar(&o.PruneWhitelist, "prune-whitelist", o.PruneWhitelist, "Overwrite the default whitelist with <group/version/kind> for --prune")
 	cmd.Flags().BoolVar(&o.OpenAPIPatch, "openapi-patch", o.OpenAPIPatch, "If true, use openapi to calculate diff when the openapi presents and the resource can be found in the openapi spec. Otherwise, fall back to use baked-in types.")
-	cmd.Flags().BoolVar(&o.ServerDryRun, "server-dry-run", o.ServerDryRun, "If true, request will be sent to server with dry-run flag, which means the modifications won't be persisted. This is an alpha feature and flag.")
-	cmd.Flags().Bool("dry-run", false, "If true, only print the object that would be sent, without sending it. Warning: --dry-run cannot accurately output the result of merging the local manifest and the server-side data. Use --server-dry-run to get the merged result instead.")
 	cmdutil.AddServerSideApplyFlags(cmd)
 
 	// apply subcommands
@@ -210,7 +209,7 @@ func (o *ApplyOptions) Complete(f cmdutil.Factory, cmd *cobra.Command) error {
 	o.ServerSideApply = cmdutil.GetServerSideApplyFlag(cmd)
 	o.ForceConflicts = cmdutil.GetForceConflictsFlag(cmd)
 	o.FieldManager = cmdutil.GetFieldManagerFlag(cmd)
-	o.DryRun = cmdutil.GetDryRunFlag(cmd)
+
 	o.DynamicClient, err = f.DynamicClient()
 	if err != nil {
 		return err
@@ -221,27 +220,22 @@ func (o *ApplyOptions) Complete(f cmdutil.Factory, cmd *cobra.Command) error {
 		return err
 	}
 
+	err = o.DryRunFlags.Complete(cmd)
+	if err != nil {
+		return err
+	}
+
 	if o.ForceConflicts && !o.ServerSideApply {
 		return fmt.Errorf("--force-conflicts only works with --server-side")
 	}
 
-	if o.DryRun && o.ServerSideApply {
-		return fmt.Errorf("--dry-run doesn't work with --server-side (did you mean --server-dry-run instead?)")
-	}
-
-	if o.DryRun && o.ServerDryRun {
-		return fmt.Errorf("--dry-run and --server-dry-run can't be used together")
+	if o.DryRunFlags.GetStrategy().Client() && o.ServerSideApply {
+		return fmt.Errorf("--dry-run=client doesn't work with --server-side (did you mean --dry-run=server instead?)")
 	}
 
 	// allow for a success message operation to be specified at print time
 	o.ToPrinter = func(operation string) (printers.ResourcePrinter, error) {
 		o.PrintFlags.NamePrintFlags.Operation = operation
-		if o.DryRun {
-			o.PrintFlags.Complete("%s (dry run)")
-		}
-		if o.ServerDryRun {
-			o.PrintFlags.Complete("%s (server dry run)")
-		}
 		return o.PrintFlags.ToPrinter()
 	}
 
@@ -396,7 +390,7 @@ func (o *ApplyOptions) Run() error {
 			}
 
 			helper := resource.NewHelper(info.Client, info.Mapping)
-			if o.ServerDryRun {
+			if o.DryRunFlags.GetStrategy().Server() {
 				if err := resource.VerifyDryRun(info.Mapping.GroupVersionKind, o.DynamicClient, o.DiscoveryClient); err != nil {
 					return err
 				}
@@ -469,15 +463,14 @@ See http://k8s.io/docs/reference/using-api/api-concepts/#conflicts`, err)
 			if err := util.CreateApplyAnnotation(info.Object, unstructured.UnstructuredJSONScheme); err != nil {
 				return cmdutil.AddSourceToErr("creating", info.Source, err)
 			}
-
-			if !o.DryRun {
+			if !o.DryRunFlags.GetStrategy().Client() {
 				// Then create the resource and skip the three-way merge
 				helper := resource.NewHelper(info.Client, info.Mapping)
-				if o.ServerDryRun {
+				if o.DryRunFlags.GetStrategy().Server() {
 					if err := resource.VerifyDryRun(info.Mapping.GroupVersionKind, o.DynamicClient, o.DiscoveryClient); err != nil {
 						return cmdutil.AddSourceToErr("creating", info.Source, err)
 					}
-					helper.DryRun(o.ServerDryRun)
+					helper.DryRun(o.DryRunFlags.GetStrategy().Server())
 				}
 				obj, err := helper.Create(info.Namespace, true, info.Object)
 				if err != nil {
@@ -508,7 +501,7 @@ See http://k8s.io/docs/reference/using-api/api-concepts/#conflicts`, err)
 			return err
 		}
 
-		if !o.DryRun {
+		if !o.DryRunFlags.GetStrategy().Client() {
 			metadata, _ := meta.Accessor(info.Object)
 			annotationMap := metadata.GetAnnotations()
 			if _, ok := annotationMap[corev1.LastAppliedConfigAnnotation]; !ok {
