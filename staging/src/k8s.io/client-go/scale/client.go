@@ -21,11 +21,13 @@ import (
 	"fmt"
 
 	autoscaling "k8s.io/api/autoscaling/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	serializer "k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
+	scheme "k8s.io/client-go/kubernetes/scheme"
 	restclient "k8s.io/client-go/rest"
 )
 
@@ -138,7 +140,7 @@ func (c *scaleClient) Scales(namespace string) ScaleInterface {
 	}
 }
 
-func (c *namespacedScaleClient) Get(resource schema.GroupResource, name string) (*autoscaling.Scale, error) {
+func (c *namespacedScaleClient) Get(ctx context.Context, resource schema.GroupResource, name string, opts metav1.GetOptions) (*autoscaling.Scale, error) {
 	// Currently, a /scale endpoint can return different scale types.
 	// Until we have support for the alternative API representations proposal,
 	// we need to deal with accepting different API versions.
@@ -155,7 +157,8 @@ func (c *namespacedScaleClient) Get(resource schema.GroupResource, name string) 
 		Resource(gvr.Resource).
 		Name(name).
 		SubResource("scale").
-		Do(context.TODO())
+		VersionedParams(&opts, scheme.ParameterCodec).
+		Do(ctx)
 	if err := result.Error(); err != nil {
 		return nil, err
 	}
@@ -163,7 +166,7 @@ func (c *namespacedScaleClient) Get(resource schema.GroupResource, name string) 
 	return convertToScale(&result)
 }
 
-func (c *namespacedScaleClient) Update(resource schema.GroupResource, scale *autoscaling.Scale) (*autoscaling.Scale, error) {
+func (c *namespacedScaleClient) Update(ctx context.Context, resource schema.GroupResource, scale *autoscaling.Scale, opts metav1.UpdateOptions) (*autoscaling.Scale, error) {
 	path, gvr, err := c.client.pathAndVersionFor(resource)
 	if err != nil {
 		return nil, fmt.Errorf("unable to get client for %s: %v", resource.String(), err)
@@ -197,7 +200,8 @@ func (c *namespacedScaleClient) Update(resource schema.GroupResource, scale *aut
 		Name(scale.Name).
 		SubResource("scale").
 		Body(scaleUpdateBytes).
-		Do(context.TODO())
+		VersionedParams(&opts, scheme.ParameterCodec).
+		Do(ctx)
 	if err := result.Error(); err != nil {
 		// propagate "raw" error from the API
 		// this allows callers to interpret underlying Reason field
@@ -208,7 +212,7 @@ func (c *namespacedScaleClient) Update(resource schema.GroupResource, scale *aut
 	return convertToScale(&result)
 }
 
-func (c *namespacedScaleClient) Patch(gvr schema.GroupVersionResource, name string, pt types.PatchType, data []byte) (*autoscaling.Scale, error) {
+func (c *namespacedScaleClient) Patch(ctx context.Context, gvr schema.GroupVersionResource, name string, pt types.PatchType, data []byte, opts metav1.PatchOptions) (*autoscaling.Scale, error) {
 	groupVersion := gvr.GroupVersion()
 	result := c.client.clientBase.Patch(pt).
 		AbsPath(c.client.apiPathFor(groupVersion)).
@@ -217,7 +221,8 @@ func (c *namespacedScaleClient) Patch(gvr schema.GroupVersionResource, name stri
 		Name(name).
 		SubResource("scale").
 		Body(data).
-		Do(context.TODO())
+		VersionedParams(&opts, scheme.ParameterCodec).
+		Do(ctx)
 	if err := result.Error(); err != nil {
 		return nil, err
 	}
