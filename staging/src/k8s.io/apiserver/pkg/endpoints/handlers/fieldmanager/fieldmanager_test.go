@@ -22,6 +22,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -221,39 +222,6 @@ func TestUpdateApplyConflict(t *testing.T) {
 	err := f.Apply(appliedObj, "fieldmanager_conflict", false)
 	if err == nil || !apierrors.IsConflict(err) {
 		t.Fatalf("Expecting to get conflicts but got %v", err)
-	}
-}
-
-func TestApplyStripsFields(t *testing.T) {
-	f := NewTestFieldManager(schema.FromAPIVersionAndKind("apps/v1", "Deployment"))
-
-	newObj := &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"apiVersion": "apps/v1",
-			"kind":       "Deployment",
-		},
-	}
-
-	newObj.SetName("b")
-	newObj.SetNamespace("b")
-	newObj.SetUID("b")
-	newObj.SetClusterName("b")
-	newObj.SetGeneration(0)
-	newObj.SetResourceVersion("b")
-	newObj.SetCreationTimestamp(metav1.NewTime(time.Now()))
-	newObj.SetManagedFields([]metav1.ManagedFieldsEntry{
-		{
-			Manager:    "update",
-			Operation:  metav1.ManagedFieldsOperationApply,
-			APIVersion: "apps/v1",
-		},
-	})
-	if err := f.Update(newObj, "fieldmanager_test"); err != nil {
-		t.Fatalf("failed to apply object: %v", err)
-	}
-
-	if m := f.ManagedFields(); len(m) != 0 {
-		t.Fatalf("fields did not get stripped: %v", m)
 	}
 }
 
@@ -730,5 +698,38 @@ func TestApplySuccessWithNoManagedFields(t *testing.T) {
 
 	if err != nil {
 		t.Fatalf("failed to apply object: %v", err)
+	}
+}
+
+func TestNoOpChanges(t *testing.T) {
+	first := NewTestFieldManager(schema.FromAPIVersionAndKind("v1", "Pod"))
+	second := NewTestFieldManager(schema.FromAPIVersionAndKind("v1", "Pod"))
+
+	obj := &unstructured.Unstructured{Object: map[string]interface{}{}}
+	if err := yaml.Unmarshal([]byte(`{
+		"apiVersion": "v1",
+		"kind": "Pod",
+		"metadata": {
+			"labels": {
+				"a": "b"
+			},
+		}
+	}`), &obj.Object); err != nil {
+		t.Fatalf("error decoding YAML: %v", err)
+	}
+
+	err := first.Apply(obj, "fieldmanager_test", false)
+	if err != nil {
+		t.Fatalf("failed to apply object: %v", err)
+	}
+	// Sleep for one second to make sure that the times of each update operation is different.
+	time.Sleep(1 * time.Second)
+	err = second.Apply(obj, "fieldmanager_test", false)
+	if err != nil {
+		t.Fatalf("failed to apply object: %v", err)
+	}
+
+	if !reflect.DeepEqual(first.liveObj, second.liveObj) {
+		t.Fatalf("expected noop, but got \n%v\n---\n%v\n", first.liveObj, second.liveObj)
 	}
 }
